@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- shared helpers ----------
+    function uid() {
+      return request.auth.uid;
+    }
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // ================= users =================
+    match /users/{userId} {
+      allow read: if isSignedIn();
+
+      // Client creates their own profile. They MUST start with pending verification.
+      allow create: if isSignedIn()
+        && uid() == userId
+        && request.resource.data.userId == userId
+        && request.resource.data.role in ['donor', 'receiver']
+        && request.resource.data.verificationStatus == 'pending';
+
+      // Client cannot mutate their role or verificationStatus.
+      allow update: if isSignedIn()
+        && uid() == userId
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.email == resource.data.email
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.verificationStatus == resource.data.verificationStatus;
+
+      allow delete: if false;
+    }
+
+    // ================= foods =================
+    match /foods/{foodId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.donorId == uid()
+        && request.resource.data.foodType in ['cooked', 'packed']
+        && request.resource.data.status == 'available'
+        && request.resource.data.currentReservationId == null;
+
+      // Client is ONLY allowed to edit their own food's basic metadata.
+      // Status changes (reserved, completed, expired) and reservation tracking
+      // are EXCLUSIVELY handled by Admin SDK (Cloud Functions).
+      allow update: if isSignedIn() 
+        && request.resource.data.donorId == uid()
+        && resource.data.donorId == uid()
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.currentReservationId == resource.data.currentReservationId
+        && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['foodName', 'quantity', 'description', 'imageUrl',
+                      'preparedAt', 'expiryAt', 'updatedAt', 'latitude', 'longitude']);
+
+      allow delete: if false;
+    }
+
+    // ================= reservations =================
+    match /reservations/{reservationId} {
+      // Allow signed-in users (donors and receivers) to read reservation status
+      allow read: if isSignedIn();
+
+      // Creation is server-only (reserveFood Cloud Function).
+      allow create: if false;
+
+      // Status mutations (cancel, verifyOtp, complete) are server-only.
+      allow update: if false;
+
+      allow delete: if false;
+    }
+
+    // ================= pickup_logs =================
+    match /pickup_logs/{logId} {
+      allow read: if isSignedIn();
+      // Client can only create FOOD_POSTED logs. Everything else is server-generated.
+      allow create: if isSignedIn()
+        && request.resource.data.actorId == uid()
+        && request.resource.data.action == 'FOOD_POSTED';
+        
+      allow update, delete: if false;
+    }
+  }
+}
+
